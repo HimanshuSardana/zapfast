@@ -3,7 +3,7 @@
 use egui::{Key, Modifiers};
 
 use crate::app::App;
-use crate::model::{Action, Chat, Dialog, Page, Scroll};
+use crate::model::{Action, Chat, Dialog, Page, Pane, Scroll};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     if app.image_preview.is_some() {
@@ -230,10 +230,6 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             }
         }
     }
-    // Arrow Up in an empty, focused composer edits the user's most recent
-    // message, as WhatsApp does. The key keeps its normal meaning everywhere
-    // else: it navigates open overlays and moves the cursor in a non-empty
-    // field.
     let edit_previous = composer_focused
         && app.page == Page::Chats
         && app.open_chat.is_some()
@@ -255,7 +251,140 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = edit_previous.then(|| app.previous_own_editable()).flatten() {
         actions.push(Action::Edit(id));
     }
+    actions.extend(vim_navigation(app, ctx, editing_text, menu_open));
     app.actions.extend(actions);
+}
+
+/// Vim-style pane navigation. `1` focuses the chat list on the left, `2` the
+/// open chat's messages on the right, and `j`/`k` walk whichever pane has
+/// focus: the sidebar cursor in the list, a few lines at a time in the chat.
+/// Plain letters and digits are speed keys only on the chat page with no
+/// overlay open and no text field being edited, so they still type normally.
+fn vim_navigation(
+    app: &mut App,
+    ctx: &egui::Context,
+    editing_text: bool,
+    menu_open: bool,
+) -> Vec<Action> {
+    let mut actions = Vec::new();
+    if !vim_navigation_allowed(app, editing_text, menu_open) {
+        return actions;
+    }
+    let pressed = |key: Key| {
+        ctx.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: found,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if *found == key && *modifiers == Modifiers::NONE
+                )
+            })
+        })
+    };
+    let (focus_sidebar, focus_chat) = (pressed(Key::Num1), pressed(Key::Num2));
+    let (down, up) = (pressed(Key::J), pressed(Key::K));
+    if !(focus_sidebar || focus_chat || down || up) {
+        return actions;
+    }
+    ctx.input_mut(|input| {
+        for key in [Key::Num1, Key::Num2, Key::J, Key::K] {
+            take_plain(input, key);
+        }
+    });
+    if focus_sidebar {
+        app.pane = Pane::Sidebar;
+        app.sidebar_visible = true;
+        // Seed the cursor from the open chat, or the search result the arrows
+        // last reached, so the first `j`/`k` moves from where the eye is.
+        if app.pane_cursor.is_none() {
+            app.pane_cursor = if app.search.trim().is_empty() {
+                app.open_chat.clone()
+            } else {
+                app.search_selected.clone()
+            }
+            .or_else(|| app.open_chat.clone())
+            .or_else(|| app.visible_chats().first().map(|chat| chat.id.clone()));
+        }
+        if let Some(cursor) = app.pane_cursor.clone() {
+            app.scroll_chat_into_view = Some(cursor);
+        }
+    }
+    if focus_chat {
+        app.pane = Pane::Chat;
+        if let Some(id) = app.pane_cursor.clone().or_else(|| app.open_chat.clone())
+            && app.open_chat.as_deref() != Some(id.as_str())
+        {
+            app.scroll_chat_into_view = Some(id.clone());
+            actions.push(Action::OpenChat(id));
+        }
+    }
+    if app.pane == Pane::Sidebar {
+        if down {
+            move_sidebar_cursor(app, 1);
+        }
+        if up {
+            move_sidebar_cursor(app, -1);
+        }
+    } else if app.open_chat.is_some() {
+        if down {
+            actions.push(Action::ScrollPage(Scroll::LineDown));
+        }
+        if up {
+            actions.push(Action::ScrollPage(Scroll::LineUp));
+        }
+    }
+    actions
+}
+
+/// Whether the chat page is clear enough for the plain `1`/`2`/`j`/`k` speed
+/// keys: not typing, and no dialog, picker, recording, reaction or menu taking
+/// the keyboard.
+fn vim_navigation_allowed(app: &App, editing_text: bool, menu_open: bool) -> bool {
+    app.page == Page::Chats
+        && !editing_text
+        && app.dialog.is_none()
+        && !app.show_update
+        && app.picker.is_none()
+        && app.reaction_target.is_none()
+        && app.recording.is_none()
+        && !menu_open
+}
+
+/// Moves the sidebar cursor by `step` rows, clamped to the list, revealing the
+/// reached chat. `j`/`k` use it while the sidebar pane has focus.
+fn move_sidebar_cursor(app: &mut App, step: i32) {
+    let visible = app.visible_chats();
+    if visible.is_empty() {
+        app.pane_cursor = None;
+        return;
+    }
+    let filtering = !app.search.trim().is_empty();
+    let from = if filtering {
+        app.search_selected
+            .clone()
+            .or_else(|| app.pane_cursor.clone())
+    } else {
+        app.pane_cursor.clone()
+    }
+    .or_else(|| app.open_chat.clone());
+    let current = from.and_then(|id| visible.iter().position(|chat| chat.id == id));
+    let next = match current {
+        Some(index) => (index as i32 + step).clamp(0, visible.len() as i32 - 1) as usize,
+        None if step > 0 => 0,
+        None => visible.len() - 1,
+    };
+    let id = visible[next].id.clone();
+    app.pane_cursor = Some(id.clone());
+    // While searching, the arrows and the cursor share one highlight, so keep
+    // them on the same row.
+    if filtering {
+        app.search_selected = Some(id.clone());
+    }
+    app.scroll_chat_into_view = Some(id);
 }
 
 /// Takes an exact Command/Ctrl+1..9 press, leaving modified number keys alone.
@@ -423,6 +552,11 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+↑ / Alt+↓", "Previous / next chat"),
     ("Ctrl+Shift+[ / ]", "Previous / next chat, as in WhatsApp"),
     ("Ctrl+1..9", "Open a chat by its position in the chat list"),
+    ("1 / 2", "Focus the chat list / the open chat (vim)"),
+    (
+        "j / k",
+        "Move in the focused pane: the chat list or the messages",
+    ),
     ("↑", "Edit the previous message (when the input is empty)"),
     ("Enter", "Send (Shift+Enter for a new line)"),
     (
@@ -837,11 +971,12 @@ mod tests {
     }
 
     #[test]
-    fn numbered_shortcuts_leave_plain_and_modified_numbers_alone() {
+    fn numbered_shortcuts_leave_modified_numbers_alone() {
         let (_root, mut app, _ids) = app_with_chats(2);
         let ctx = egui::Context::default();
+        // Plain 1 and 2 are the pane-focus keys now; modified numbers stay for
+        // Ctrl+1..9 and the typing of a modified digit.
         for modifiers in [
-            Modifiers::NONE,
             Modifiers::SHIFT,
             Modifiers::ALT,
             Modifiers::COMMAND | Modifiers::SHIFT,
@@ -986,5 +1121,76 @@ mod tests {
             assert!(press(&mut app, &ctx, key, Modifiers::NONE));
             assert!(app.actions.is_empty());
         }
+    }
+
+    #[test]
+    fn vim_keys_focus_panes_walk_the_list_and_scroll_messages() {
+        let (_root, mut app, ids) = app_with_chats(3);
+        let ctx = egui::Context::default();
+        app.open_chat = Some(ids[0].clone());
+
+        // `1` focuses the sidebar and puts its cursor on the open chat.
+        assert!(!press(&mut app, &ctx, Key::Num1, Modifiers::NONE));
+        assert_eq!(app.pane, Pane::Sidebar);
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[0]));
+
+        // `j` moves the cursor down without opening or marking the chat.
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::J, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[1]));
+        assert_eq!(app.scroll_chat_into_view.as_ref(), Some(&ids[1]));
+        assert!(app.actions.is_empty(), "j must not open the chat");
+        assert_eq!(app.open_chat.as_ref(), Some(&ids[0]));
+
+        // It clamps at the end rather than wrapping.
+        assert!(!press(&mut app, &ctx, Key::J, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[2]));
+        assert!(!press(&mut app, &ctx, Key::J, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[2]));
+
+        // `k` walks back up.
+        assert!(!press(&mut app, &ctx, Key::K, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[1]));
+
+        // `2` opens the cursor chat and focuses the messages.
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::Num2, Modifiers::NONE));
+        assert_eq!(app.pane, Pane::Chat);
+        assert_eq!(app.actions, [Action::OpenChat(ids[1].clone())]);
+
+        // `j`/`k` now scroll the open chat by lines.
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::J, Modifiers::NONE));
+        assert_eq!(app.actions, [Action::ScrollPage(Scroll::LineDown)]);
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::K, Modifiers::NONE));
+        assert_eq!(app.actions, [Action::ScrollPage(Scroll::LineUp)]);
+    }
+
+    #[test]
+    fn vim_keys_leave_modified_keys_settings_and_overlays_alone() {
+        let (_root, mut app, _ids) = app_with_chats(2);
+        let ctx = egui::Context::default();
+        // A modified press is not a speed key and must reach the views.
+        for (key, modifiers) in [
+            (Key::Num1, Modifiers::SHIFT),
+            (Key::J, Modifiers::COMMAND),
+            (Key::K, Modifiers::ALT),
+        ] {
+            assert!(press(&mut app, &ctx, key, modifiers));
+            assert!(app.actions.is_empty());
+            assert_eq!(app.pane, Pane::Chat);
+        }
+        app.page = Page::Settings;
+        for key in [Key::Num1, Key::Num2, Key::J, Key::K] {
+            assert!(press(&mut app, &ctx, key, Modifiers::NONE));
+        }
+        assert!(app.actions.is_empty());
+        app.page = Page::Chats;
+        app.dialog = Some(Dialog::Shortcuts);
+        for key in [Key::Num1, Key::Num2, Key::J, Key::K] {
+            assert!(press(&mut app, &ctx, key, Modifiers::NONE));
+        }
+        assert!(app.actions.is_empty());
     }
 }

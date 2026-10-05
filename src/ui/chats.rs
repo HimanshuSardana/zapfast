@@ -4,7 +4,7 @@ use egui::{Align, Frame, Key, Layout, Margin, Rect, Sense, Vec2, pos2, vec2};
 
 use crate::app::App;
 use crate::backend::LinkStatus;
-use crate::model::{Action, Chat, ChatFilter, Contact, Dialog, Message, Page};
+use crate::model::{Action, Chat, ChatFilter, Contact, Dialog, Message, Page, Pane};
 use crate::theme::{self, Icon, Palette};
 
 use super::focus::{Stop, TabStop};
@@ -937,12 +937,18 @@ fn person_row(
 fn row(app: &mut App, ui: &mut egui::Ui, chat: &Chat) -> egui::Response {
     let palette = app.palette;
     let title = app.chat_title(chat);
-    // While searching, the result reached with the arrows is the selection;
-    // before any arrow press it stays the open chat, as a click leaves it.
+    // While searching, the result reached with the arrows is the selection.
+    // With the sidebar focused for the `1`/`j`/`k` keys, its cursor is, even
+    // before `2` opens the chat; otherwise the open chat is, as a click leaves
+    // it.
+    let cursor = (app.pane == Pane::Sidebar)
+        .then_some(app.pane_cursor.as_ref())
+        .flatten();
     let selected = app
         .search_selected
         .as_ref()
         .filter(|_| !app.search.trim().is_empty())
+        .or(cursor)
         .or(app.open_chat.as_ref())
         .is_some_and(|selected| *selected == chat.id);
     let now = crate::util::now();

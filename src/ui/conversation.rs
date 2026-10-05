@@ -27,6 +27,8 @@ const SENDER_AVATAR: f32 = 28.0;
 const BODY_SIZE: f32 = 14.5;
 /// Extra space above the first message of a run from one side.
 const RUN_GAP: f32 = 5.0;
+/// Distance a single `j`/`k` press scrolls the open chat, in points.
+const LINE_SCROLL: f32 = 80.0;
 /// Footer label on an outgoing message that failed to send.
 const NOT_SENT: &str = "Not sent";
 const NOT_SENT_HINT: &str =
@@ -2201,6 +2203,8 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
                 let page = match kind {
                     Scroll::PageUp => viewport.height() * 0.9,
                     Scroll::PageDown => -(viewport.height() * 0.9),
+                    Scroll::LineUp => LINE_SCROLL,
+                    Scroll::LineDown => -LINE_SCROLL,
                     Scroll::Top | Scroll::Bottom => 0.0,
                 };
                 let left = key_scroll
@@ -2211,7 +2215,7 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat) {
             if let Some(scroll) = &mut key_scroll {
                 let fraction = scroll.advance(time);
                 let step = match scroll.kind {
-                    Scroll::PageUp | Scroll::PageDown => {
+                    Scroll::PageUp | Scroll::PageDown | Scroll::LineUp | Scroll::LineDown => {
                         let step = scroll.remaining * fraction;
                         scroll.remaining -= step;
                         step

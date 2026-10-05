@@ -14,8 +14,8 @@ use crate::i18n::Locale;
 use crate::image_preview::PreviewState;
 use crate::model::{
     AccountId, Action, Chat, ChatFilter, ChatId, Contact, Content, Delivery, Dialog, Gif, GifError,
-    Label, Media, MediaState, Message, Page, PickerTab, Scroll, SidebarDisplayMode, StickerPack,
-    StickerShelf, Toast, ToastKind,
+    Label, Media, MediaState, Message, Page, Pane, PickerTab, Scroll, SidebarDisplayMode,
+    StickerPack, StickerShelf, Toast, ToastKind,
 };
 use crate::paths::AppDirs;
 use crate::settings::{AccountRoster, NotificationSound, Settings, ThemeChoice};
@@ -526,6 +526,13 @@ pub struct App {
     /// The new-contact dialog's "Save to phone" box.
     pub new_contact_to_phone: bool,
     pub sidebar_visible: bool,
+    /// Which pane `j`/`k` and `1`/`2` are working in. Window state, not
+    /// stored in settings, so a fresh start always begins in the messages.
+    pub pane: Pane,
+    /// The sidebar's keyboard cursor: the row a `j`/`k` walk lands on,
+    /// highlighted apart from the open chat until `2` opens it. `None`
+    /// until the sidebar is focused.
+    pub pane_cursor: Option<ChatId>,
     /// Name typed in the label manager.
     pub label_name: String,
     /// Colour the manager will use for the next label.
@@ -1074,6 +1081,8 @@ impl App {
             group_name_edit: None,
             new_contact_to_phone: true,
             sidebar_visible: true,
+            pane: Pane::default(),
+            pane_cursor: None,
             label_name: String::new(),
             label_color: crate::archive::DEFAULT_COLOR.to_owned(),
             label_editing: None,
@@ -5263,7 +5272,7 @@ impl App {
                 // Reaching the top releases stick-to-bottom, as the wheel and
                 // the edge-scroll drag do; reaching the bottom (paging down or
                 // End) lets it take over again, so it is left alone here.
-                if matches!(scroll, Scroll::PageUp | Scroll::Top) {
+                if matches!(scroll, Scroll::PageUp | Scroll::LineUp | Scroll::Top) {
                     self.scroll_to_bottom = false;
                 }
                 self.scroll_page = Some(scroll);
