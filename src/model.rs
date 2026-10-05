@@ -979,6 +979,18 @@ pub enum Page {
     Wallpaper,
 }
 
+/// Which of the two main panes the keyboard is working in: the chat list on
+/// the left, or the open chat's messages on the right. `1` focuses the
+/// sidebar and `2` the messages, and `j`/`k` walk whichever has focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    /// The left chat list.
+    Sidebar,
+    /// The open chat's message list.
+    #[default]
+    Chat,
+}
+
 /// The tabs of the picker above the composer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerTab {
@@ -1289,6 +1301,10 @@ pub enum Scroll {
     PageUp,
     /// About one screen toward newer messages.
     PageDown,
+    /// A few lines toward older messages, for `k` in the chat pane.
+    LineUp,
+    /// A few lines toward newer messages, for `j` in the chat pane.
+    LineDown,
     /// The top of the loaded history.
     Top,
     /// The newest message, eased. `Action::ScrollToBottom` (Ctrl+End) jumps

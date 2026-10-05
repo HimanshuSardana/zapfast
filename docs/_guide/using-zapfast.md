@@ -259,8 +259,11 @@ Use `↑`/`↓` to select a matching chat and Enter to open it ready for typing.
 Click a message result to jump to it, or a contact to start a chat. Use
 `Alt+↑/↓`, or `Ctrl+Shift+[` and `Ctrl+Shift+]` as in WhatsApp, to switch chats
 without leaving the composer (Command instead of Ctrl on macOS), and
-`Ctrl+1` through `Ctrl+9` to open the chat at that position in the list. Within an open
-chat, `PgUp`/`PgDn` scroll by about a page, and `Home`/`End` jump to the top or
+`Ctrl+1` through `Ctrl+9` to open the chat at that position in the list. With the
+plain `1` key the chat list takes the keyboard, `j`/`k` move its highlight
+without opening anything, and `2` opens the highlighted chat and moves the
+keyboard to its messages. There, `j`/`k` scroll a few lines at a time, `PgUp`/`PgDn`
+scroll by about a page, and `Home`/`End` jump to the top or
 the newest message (when the input is empty).
 
 Sending while reading older messages keeps your place. Use the
