@@ -261,7 +261,8 @@ Click a message result to jump to it, or a contact to start a chat. Use
 without leaving the composer (Command instead of Ctrl on macOS), and
 `Ctrl+1` through `Ctrl+9` to open the chat at that position in the list. With the
 plain `1` key the chat list takes the keyboard, `j`/`k` move its highlight
-without opening anything, and `2` opens the highlighted chat and moves the
+without opening anything, `gg` and `G` jump to the first and last chat, and `/`
+focuses the search. Press `2` to open the highlighted chat and move the
 keyboard to its messages. There, `j`/`k` scroll a few lines at a time, `PgUp`/`PgDn`
 scroll by about a page, and `Home`/`End` jump to the top or
 the newest message (when the input is empty).

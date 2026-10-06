@@ -533,6 +533,10 @@ pub struct App {
     /// highlighted apart from the open chat until `2` opens it. `None`
     /// until the sidebar is focused.
     pub pane_cursor: Option<ChatId>,
+    /// The egui frame a lone `g` was pressed in, waiting for the second `g`
+    /// of `gg`. Holding the frame keeps a re-layout pass of that same frame
+    /// from cancelling the sequence.
+    pub vim_g_frame: Option<u64>,
     /// Name typed in the label manager.
     pub label_name: String,
     /// Colour the manager will use for the next label.
@@ -1083,6 +1087,7 @@ impl App {
             sidebar_visible: true,
             pane: Pane::default(),
             pane_cursor: None,
+            vim_g_frame: None,
             label_name: String::new(),
             label_color: crate::archive::DEFAULT_COLOR.to_owned(),
             label_editing: None,
