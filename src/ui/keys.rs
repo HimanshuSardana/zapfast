@@ -3,7 +3,7 @@
 use egui::{Key, Modifiers};
 
 use crate::app::App;
-use crate::model::{Action, Chat, Dialog, Page, Pane, Scroll};
+use crate::model::{Action, Chat, ChatId, Dialog, Page, Pane, Scroll};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     if app.image_preview.is_some() {
@@ -256,10 +256,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Vim-style pane navigation. `1` focuses the chat list on the left, `2` the
-/// open chat's messages on the right, and `j`/`k` walk whichever pane has
-/// focus: the sidebar cursor in the list, a few lines at a time in the chat.
-/// Plain letters and digits are speed keys only on the chat page with no
-/// overlay open and no text field being edited, so they still type normally.
+/// open chat's messages on the right, `/` focuses the chat search, and `j`/`k`
+/// walk whichever pane has focus: the sidebar cursor in the list, a few lines
+/// at a time in the chat. In the sidebar, `gg` jumps to the first chat and `G`
+/// to the last. Plain letters and digits are speed keys only on the chat page
+/// with no overlay open and no text field being edited, so they still type
+/// normally.
 fn vim_navigation(
     app: &mut App,
     ctx: &egui::Context,
@@ -270,7 +272,7 @@ fn vim_navigation(
     if !vim_navigation_allowed(app, editing_text, menu_open) {
         return actions;
     }
-    let pressed = |key: Key| {
+    let pressed = |key: Key, modifiers: Modifiers| {
         ctx.input(|input| {
             input.events.iter().any(|event| {
                 matches!(
@@ -278,23 +280,63 @@ fn vim_navigation(
                     egui::Event::Key {
                         key: found,
                         pressed: true,
-                        modifiers,
+                        modifiers: found_modifiers,
                         ..
-                    } if *found == key && *modifiers == Modifiers::NONE
+                    } if *found == key && *found_modifiers == modifiers
                 )
             })
         })
     };
-    let (focus_sidebar, focus_chat) = (pressed(Key::Num1), pressed(Key::Num2));
-    let (down, up) = (pressed(Key::J), pressed(Key::K));
-    if !(focus_sidebar || focus_chat || down || up) {
+    let frame = ctx.cumulative_frame_nr();
+    // A re-layout pass replays the frame that pressed `g`; the sequence is
+    // already pending and must not be cancelled by that same frame again.
+    if app.vim_g_frame == Some(frame) {
+        return actions;
+    }
+    let plain_g = pressed(Key::G, Modifiers::NONE);
+    let upper_g = pressed(Key::G, Modifiers::SHIFT);
+    let awaiting_second_g = app.vim_g_frame.take().is_some();
+    if awaiting_second_g && plain_g {
+        ctx.input_mut(|input| take_plain(input, Key::G));
+        if app.pane == Pane::Sidebar {
+            sidebar_cursor_to(app, true);
+        }
+        return actions;
+    }
+    if plain_g {
+        // The first `g` of `gg` waits for the second, so it is held for the
+        // next key instead of doing anything on its own.
+        app.vim_g_frame = Some(frame);
+        ctx.input_mut(|input| take_plain(input, Key::G));
+        return actions;
+    }
+    if upper_g {
+        ctx.input_mut(|input| take_exact(input, Modifiers::SHIFT, Key::G));
+        if app.pane == Pane::Sidebar {
+            sidebar_cursor_to(app, false);
+        }
+        return actions;
+    }
+    let (focus_sidebar, focus_chat) = (
+        pressed(Key::Num1, Modifiers::NONE),
+        pressed(Key::Num2, Modifiers::NONE),
+    );
+    let (down, up) = (
+        pressed(Key::J, Modifiers::NONE),
+        pressed(Key::K, Modifiers::NONE),
+    );
+    let search = pressed(Key::Slash, Modifiers::NONE);
+    if !(focus_sidebar || focus_chat || down || up || search) {
         return actions;
     }
     ctx.input_mut(|input| {
-        for key in [Key::Num1, Key::Num2, Key::J, Key::K] {
+        for key in [Key::Num1, Key::Num2, Key::J, Key::K, Key::Slash] {
             take_plain(input, key);
         }
     });
+    if search {
+        actions.push(Action::FocusSearch);
+    }
     if focus_sidebar {
         app.pane = Pane::Sidebar;
         app.sidebar_visible = true;
@@ -340,9 +382,9 @@ fn vim_navigation(
     actions
 }
 
-/// Whether the chat page is clear enough for the plain `1`/`2`/`j`/`k` speed
-/// keys: not typing, and no dialog, picker, recording, reaction or menu taking
-/// the keyboard.
+/// Whether the chat page is clear enough for the plain `1`/`2`/`/`/`j`/`k`
+/// speed keys: not typing, and no dialog, picker, recording, reaction or menu
+/// taking the keyboard.
 fn vim_navigation_allowed(app: &App, editing_text: bool, menu_open: bool) -> bool {
     app.page == Page::Chats
         && !editing_text
@@ -378,12 +420,32 @@ fn move_sidebar_cursor(app: &mut App, step: i32) {
         None => visible.len() - 1,
     };
     let id = visible[next].id.clone();
-    app.pane_cursor = Some(id.clone());
-    // While searching, the arrows and the cursor share one highlight, so keep
-    // them on the same row.
-    if filtering {
+    place_sidebar_cursor(app, id);
+}
+
+/// Puts the sidebar cursor on the first (`gg`) or last (`G`) visible chat.
+fn sidebar_cursor_to(app: &mut App, first: bool) {
+    let id = {
+        let visible = app.visible_chats();
+        if first {
+            visible.first().map(|chat| chat.id.clone())
+        } else {
+            visible.last().map(|chat| chat.id.clone())
+        }
+    };
+    match id {
+        Some(id) => place_sidebar_cursor(app, id),
+        None => app.pane_cursor = None,
+    }
+}
+
+/// Highlights `id` as the sidebar cursor and reveals it. While searching, the
+/// arrows and the cursor share one highlight, so keep them on the same row.
+fn place_sidebar_cursor(app: &mut App, id: ChatId) {
+    if !app.search.trim().is_empty() {
         app.search_selected = Some(id.clone());
     }
+    app.pane_cursor = Some(id.clone());
     app.scroll_chat_into_view = Some(id);
 }
 
@@ -438,6 +500,31 @@ pub(super) fn take_plain(input: &mut egui::InputState, key: Key) -> bool {
                 modifiers,
                 ..
             } if *found == key && *modifiers == Modifiers::NONE
+        );
+        taken |= matches;
+        !matches
+    });
+    taken
+}
+
+/// Removes this frame's first press of `key` carrying exactly `modifiers`, if
+/// any, and reports whether one was found. Unlike `take_plain` this matches a
+/// shifted key, such as `G` for Shift+g, and still leaves any combination with
+/// extra modifiers alone.
+fn take_exact(input: &mut egui::InputState, modifiers: Modifiers, key: Key) -> bool {
+    let mut taken = false;
+    input.events.retain(|event| {
+        if taken {
+            return true;
+        }
+        let matches = matches!(
+            event,
+            egui::Event::Key {
+                key: found,
+                pressed: true,
+                modifiers: found_modifiers,
+                ..
+            } if *found == key && *found_modifiers == modifiers
         );
         taken |= matches;
         !matches
@@ -557,6 +644,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
         "j / k",
         "Move in the focused pane: the chat list or the messages",
     ),
+    ("gg / G", "First / last chat in the focused chat list (vim)"),
+    ("/", "Focus the chat search (when not typing)"),
     ("↑", "Edit the previous message (when the input is empty)"),
     ("Enter", "Send (Shift+Enter for a new line)"),
     (
@@ -1192,5 +1281,56 @@ mod tests {
             assert!(press(&mut app, &ctx, key, Modifiers::NONE));
         }
         assert!(app.actions.is_empty());
+    }
+
+    #[test]
+    fn vim_gg_and_upper_g_jump_to_the_ends_of_the_list() {
+        let (_root, mut app, ids) = app_with_chats(5);
+        let ctx = egui::Context::default();
+        app.open_chat = Some(ids[2].clone());
+        assert!(!press(&mut app, &ctx, Key::Num1, Modifiers::NONE));
+        app.actions.clear();
+
+        // `G` (Shift+g) goes to the last chat.
+        assert!(!press(&mut app, &ctx, Key::G, Modifiers::SHIFT));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[4]));
+        assert_eq!(app.scroll_chat_into_view.as_ref(), Some(&ids[4]));
+
+        // `gg` goes back to the first. The first `g` only arms the sequence.
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::G, Modifiers::NONE));
+        assert_eq!(
+            app.pane_cursor.as_ref(),
+            Some(&ids[4]),
+            "one g does nothing yet"
+        );
+        assert!(!press(&mut app, &ctx, Key::G, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[0]));
+        assert_eq!(app.scroll_chat_into_view.as_ref(), Some(&ids[0]));
+        assert!(app.actions.is_empty(), "gg must not open the chat");
+    }
+
+    #[test]
+    fn a_lone_g_does_not_swallow_the_next_key() {
+        let (_root, mut app, ids) = app_with_chats(3);
+        let ctx = egui::Context::default();
+        assert!(!press(&mut app, &ctx, Key::Num1, Modifiers::NONE));
+        app.actions.clear();
+        assert!(!press(&mut app, &ctx, Key::G, Modifiers::NONE));
+        // `j` cancels the pending `g` and still moves down.
+        assert!(!press(&mut app, &ctx, Key::J, Modifiers::NONE));
+        assert_eq!(app.pane_cursor.as_ref(), Some(&ids[1]));
+    }
+
+    #[test]
+    fn slash_focuses_the_chat_search_not_the_shortcuts_dialog() {
+        let (_root, mut app, _ids) = app_with_chats(3);
+        let ctx = egui::Context::default();
+        assert!(!press(&mut app, &ctx, Key::Slash, Modifiers::NONE));
+        assert_eq!(app.actions, [Action::FocusSearch]);
+        app.actions.clear();
+        // Ctrl+/ still opens the shortcuts dialog, not the search.
+        assert!(!press(&mut app, &ctx, Key::Slash, Modifiers::COMMAND));
+        assert_eq!(app.actions, [Action::ShowDialog(Dialog::Shortcuts)]);
     }
 }
